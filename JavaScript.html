@@ -1,0 +1,98 @@
+<script>
+let currentUser = null;
+document.addEventListener('DOMContentLoaded', async () => {
+  await loadUserInfo();
+  await loadDashboard();
+  setupEventListeners();
+});
+async function loadUserInfo() {
+  try {
+    currentUser = await new Promise((resolve, reject) => { google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).getCurrentUser(); });
+    document.getElementById('userName').textContent = currentUser.name || currentUser.email;
+    document.getElementById('userRole').textContent = currentUser.role || 'Employee';
+    document.getElementById('userAvatar').textContent = (currentUser.name || 'U').charAt(0).toUpperCase();
+    if (currentUser.role === 'Security' || currentUser.role === 'Admin') {
+      document.querySelectorAll('.security-only').forEach(el => el.style.display = 'flex');
+      await loadApprovalCount();
+    }
+  } catch (e) { console.error('Failed:', e); }
+}
+function setupEventListeners() {
+  document.querySelectorAll('.nav-item').forEach(item => { item.addEventListener('click', () => { if (item.dataset.view) switchView(item.dataset.view); }); });
+  document.getElementById('passForm').addEventListener('submit', handlePassSubmit);
+  document.getElementById('passType').addEventListener('change', (e) => { document.getElementById('vehicleGroup').style.display = e.target.value === 'Vehicle' ? 'block' : 'none'; });
+}
+function switchView(view) {
+  document.querySelectorAll('.nav-item').forEach(item => { item.classList.toggle('active', item.dataset.view === view); });
+  document.querySelectorAll('.view').forEach(v => { v.classList.toggle('active', v.id === view + 'View'); });
+  document.getElementById('pageTitle').textContent = { dashboard: 'Dashboard', 'my-passes': 'My Passes', 'new-pass': 'New Gate Pass', approvals: 'Approvals', verify: 'Verify Pass' }[view] || 'Dashboard';
+  if (view === 'my-passes') loadMyPasses();
+  if (view === 'approvals') loadApprovals();
+}
+async function loadDashboard() {
+  try {
+    const passes = await new Promise((resolve, reject) => { google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).getMyPasses(); });
+    document.getElementById('statTotal').textContent = passes.length;
+    document.getElementById('statApproved').textContent = passes.filter(p => p.status === 'Approved').length;
+    document.getElementById('statPending').textContent = passes.filter(p => p.status === 'Pending').length;
+    const recent = passes.slice(0, 6);
+    document.getElementById('recentPasses').innerHTML = recent.length ? recent.map(renderPassCard).join('') : '<p style="grid-column:1/-1;text-align:center;padding:40px;color:var(--gray-500)">No passes yet</p>';
+  } catch (e) { console.error(e); }
+}
+async function loadMyPasses() {
+  try {
+    const passes = await new Promise((resolve, reject) => { google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).getMyPasses(); });
+    document.getElementById('myPassesList').innerHTML = passes.length ? passes.map(renderPassCard).join('') : '<p style="text-align:center;padding:40px;color:var(--gray-500)">No passes yet</p>';
+  } catch (e) { showToast('Failed to load passes', 'error'); }
+}
+function renderPassCard(p) {
+  return `<div class="pass-card"><div class="pass-header"><div><span class="pass-type">${p.type}</span><div class="pass-id">${p.passId}</div></div><span class="status-badge ${p.status.toLowerCase()}">${p.status}</span></div><div class="pass-qr"><img src="${p.qrCode}" width="120" alt="QR Code"></div><div class="pass-info"><div class="pass-row"><span class="pass-label">Visitor</span><span class="pass-value">${p.visitorName}</span></div><div class="pass-row"><span class="pass-label">Destination</span><span class="pass-value">${p.destination}</span></div><div class="pass-row"><span class="pass-label">Valid Until</span><span class="pass-value">${formatDateTime(p.validUntil)}</span></div></div></div>`;
+}
+async function loadApprovals() {
+  try {
+    const passes = await new Promise((resolve, reject) => { google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).getPendingApprovals(); });
+    document.getElementById('approvalsList').innerHTML = passes.length ? passes.map(p => `<div class="approval-card"><div class="approval-header"><div><h4>${p.visitorName}</h4><p>Requested by ${p.requesterName}</p></div><span class="status-badge pending">Pending</span></div><div class="approval-details"><div class="approval-row"><span class="approval-label">Type</span><span class="approval-value">${p.type}</span></div><div class="approval-row"><span class="approval-label">Purpose</span><span class="approval-value">${p.purpose}</span></div><div class="approval-row"><span class="approval-label">Destination</span><span class="approval-value">${p.destination}</span></div><div class="approval-row"><span class="approval-label">Valid</span><span class="approval-value">${formatDateTime(p.validFrom)} - ${formatDateTime(p.validUntil)}</span></div></div><div class="approval-actions"><button class="btn btn-danger btn-sm" onclick="rejectPass('${p.passId}')">Reject</button><button class="btn btn-success btn-sm" onclick="approvePass('${p.passId}')">Approve</button></div></div>`).join('') : '<p style="text-align:center;padding:40px;color:var(--gray-500)">No pending approvals</p>';
+  } catch (e) { showToast('Failed to load approvals', 'error'); }
+}
+async function loadApprovalCount() {
+  try {
+    const passes = await new Promise((resolve, reject) => { google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).getPendingApprovals(); });
+    const badge = document.getElementById('approvalBadge');
+    if (passes.length > 0) { badge.textContent = passes.length; badge.style.display = 'inline'; }
+  } catch (e) {}
+}
+async function handlePassSubmit(e) {
+  e.preventDefault();
+  try {
+    const result = await new Promise((resolve, reject) => { google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).createGatePass(document.getElementById('passType').value, document.getElementById('visitorName').value, document.getElementById('purpose').value, document.getElementById('destination').value, document.getElementById('vehicleNumber').value, document.getElementById('validFrom').value, document.getElementById('validUntil').value); });
+    showToast('Gate pass created!', 'success');
+    document.getElementById('passForm').reset();
+    switchView('my-passes');
+  } catch (e) { showToast(e.message || 'Failed to create pass', 'error'); }
+}
+async function approvePass(passId) {
+  try { await new Promise((resolve, reject) => { google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).approveGatePass(passId); }); showToast('Pass approved!', 'success'); loadApprovals(); loadDashboard(); } catch (e) { showToast(e.message, 'error'); }
+}
+async function rejectPass(passId) {
+  try { await new Promise((resolve, reject) => { google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).rejectGatePass(passId, ''); }); showToast('Pass rejected', 'success'); loadApprovals(); } catch (e) { showToast(e.message, 'error'); }
+}
+async function verifyPass() {
+  const passId = document.getElementById('verifyInput').value.trim();
+  if (!passId) { showToast('Please enter a Pass ID', 'error'); return; }
+  try {
+    const result = await new Promise((resolve, reject) => { google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).verifyPass(passId); });
+    const div = document.getElementById('verifyResult');
+    if (result.valid) { div.innerHTML = `<div class="verify-result valid"><div class="verify-icon"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg></div><h3 style="margin-bottom:8px">VALID PASS</h3><p><strong>Type:</strong> ${result.type}</p><p><strong>Visitor:</strong> ${result.visitorName}</p><p><strong>Purpose:</strong> ${result.purpose}</p></div>`; }
+    else { div.innerHTML = `<div class="verify-result invalid"><div class="verify-icon"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></div><h3 style="margin-bottom:8px">INVALID PASS</h3><p>${result.error || 'Pass status: ' + result.status}</p></div>`; }
+  } catch (e) { showToast('Verification failed', 'error'); }
+}
+function formatDateTime(d) { if (!d) return '-'; return new Date(d).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+function showToast(message, type = 'success') {
+  const container = document.getElementById('toastContainer');
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.innerHTML = `<span>${message}</span>`;
+  container.appendChild(toast);
+  setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); }, 3000);
+}
+</script>
